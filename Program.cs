@@ -73,17 +73,17 @@ namespace ChromiumLauncher
                 Log($"Resolved paths -> BinDir: '{binDir}', ExePath: '{exePath}'");
                 Log($"Config values -> UpdateUrl: '{updateUrl}', LastCheck: {lastCheck}, CheckPeriodDays: {checkPeriodDays}");
 
+                bool isExeMissing = !File.Exists(exePath); // NEW: Check if it actually exists
                 bool shouldCheckUpdate = checkPeriodDays == -1 || 
                     (checkPeriodDays > 0 && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastCheck > (checkPeriodDays * 86400));
 
                 bool isExeInUse = IsFileLocked(exePath);
-                
-                Log($"Update conditions -> ShouldCheck: {shouldCheckUpdate}, IsExeInUse: {isExeInUse}");
 
-                if (shouldCheckUpdate && !string.IsNullOrEmpty(updateUrl) && !isExeInUse)
+                // NEW: Pass 'isExeMissing' to the async method to force a download
+                if ((shouldCheckUpdate || isExeMissing) && !string.IsNullOrEmpty(updateUrl) && !isExeInUse)
                 {
-                    Log("Initiating async update check...");
-                    CheckAndUpdateAsync(updateUrl, binDir).GetAwaiter().GetResult();
+                    Log($"Initiating async update check... (Force Download: {isExeMissing})");
+                    CheckAndUpdateAsync(updateUrl, binDir, isExeMissing).GetAwaiter().GetResult();
                 }
                 else
                 {
@@ -149,14 +149,13 @@ namespace ChromiumLauncher
             Log($"Updated ChromiumLastCheck to {currentTimestamp}");
         }
 
-        static async Task CheckAndUpdateAsync(string updateUrl, string binDir)
+        static async Task CheckAndUpdateAsync(string updateUrl, string binDir, bool forceDownload) 
         {
             try
             {
                 Log($"Fetching update data from: {updateUrl}");
                 using var client = new HttpClient();
                 string response = await client.GetStringAsync(updateUrl);
-                Log($"Update API response received. Length: {response.Length}");
                 
                 var apiData = response.Split(';')
                     .Select(p => p.Split('=', 2))
@@ -169,12 +168,11 @@ namespace ChromiumLauncher
                     long newTimestamp = long.Parse(newTimestampStr);
                     long currentLastCheck = long.Parse(Config.GetValueOrDefault("ChromiumLastCheck", "0"));
 
-                    Log($"API Timestamp: {newTimestamp}, Local Timestamp: {currentLastCheck}");
-
-                    if (newTimestamp > currentLastCheck)
+                    // NEW: If forceDownload is true, ignore the timestamp check
+                    if (forceDownload || newTimestamp > currentLastCheck)
                     {
                         string version = apiData.GetValueOrDefault("version", "Unknown");
-                        Log($"New version ({version}) available. Showing download UI...");
+                        Log($"Downloading version ({version})...");
                         await ShowDownloadUiAndInstall(downloadUrl, version, binDir);
                         UpdateLastCheckTime();
                     }
@@ -183,15 +181,10 @@ namespace ChromiumLauncher
                         Log("No new update available based on timestamp.");
                     }
                 }
-                else
-                {
-                    Log("API data was missing 'download' or 'timestamp' fields.");
-                }
             }
             catch (Exception ex) 
             { 
                 Log($"Network/Update check silently failed: {ex.Message}");
-                // Silently fail on network issues and proceed to launch
             }
         }
 
