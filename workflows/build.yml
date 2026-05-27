@@ -1,0 +1,33 @@
+name: Build and Package
+
+on: [push]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Prepare Artifact
+        run: |
+          mkdir build_package
+          copy bin\Release\net8.0-windows\ChromiumLauncher.exe build_package\
+          copy chrlauncher.ini build_package\
+          
+      - name: Zip Package
+        run: Compress-Archive -Path build_package\* -DestinationPath ChromiumLauncher_Release.zip
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChromiumLauncher
+          path: ChromiumLauncher_Release.zip
