@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.ComponentModel;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Http;
@@ -74,8 +75,8 @@ namespace ChromiumLauncher
                 bool isExeMissing = !File.Exists(exePath);
                 bool shouldCheckUpdate = checkPeriodDays == -1 || 
                     (checkPeriodDays > 0 && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastCheck > (checkPeriodDays * 86400));
-                bool isExeInUse = IsFileLocked(exePath);
-                
+                bool isExeInUse = IsChromiumRunning(binDir, exeName);
+
                 Log($"Update conditions -> Missing: {isExeMissing}, ShouldCheck: {shouldCheckUpdate}, IsExeInUse: {isExeInUse}");
 
                 // Trigger update check if needed (Notice we no longer check !string.IsNullOrEmpty(updateUrl) here)
@@ -399,21 +400,38 @@ namespace ChromiumLauncher
             }
         }
 
-        static bool IsFileLocked(string filePath)
+        static bool IsChromiumRunning(string binDirectory, string exeName)
         {
-            if (!File.Exists(filePath)) return false;
+            // 1. Normalize the directory path
+            string normalizedBinDir = Path.GetFullPath(binDirectory).TrimEnd('\\') + "\\";
+            
+            // 2. Strip the extension (e.g., "chrome.exe" becomes "chrome")
+            string processName = Path.GetFileNameWithoutExtension(exeName);
+            
+            // 3. Search only for processes matching the INI configuration
+            Process[] targetProcesses = Process.GetProcessesByName(processName);
 
-            try
+            foreach (Process p in targetProcesses)
             {
-                using (FileStream stream = new FileInfo(filePath).Open(FileMode.Open, FileAccess.Read, FileShare.None))
+                try
                 {
-                    stream.Close();
+                    string processPath = p.MainModule.FileName;
+                    
+                    if (processPath.StartsWith(normalizedBinDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true; 
+                    }
+                }
+                catch (Win32Exception)
+                {
+                    // Ignore processes we don't have permission to inspect
+                }
+                catch (InvalidOperationException)
+                {
+                    // Ignore processes that closed while we were looking at them
                 }
             }
-            catch (IOException)
-            {
-                return true; 
-            }
+
             return false;
         }
     }
