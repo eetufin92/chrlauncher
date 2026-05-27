@@ -14,22 +14,21 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      # Changed from 'build' to 'publish' with single-file flags
       - name: Publish Single File (Compressed)
         run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
 
       - name: Prepare Artifact
         run: |
           mkdir build_package
-          # Notice the updated path: publish outputs go to the win-x64\publish folder
-          copy bin\Release\net10.0-windows\win-x64\publish\ChromiumLauncher.exe build_package\
-          copy chrlauncher.ini build_package\
           
-      - name: Zip Package
-        run: Compress-Archive -Path build_package\* -DestinationPath ChromiumLauncher_Release.zip
+          # Copy the published executable
+          copy bin\Release\net10.0-windows\win-x64\publish\ChromiumLauncher.exe build_package\
+          
+          # Copy all files from the 'PackageExtras' folder into the build package
+          copy PackageExtras\* build_package\
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ChromiumLauncher
-          path: ChromiumLauncher_Release.zip
+          name: ChromiumLauncher_Release
+          path: build_package/
