@@ -43,6 +43,9 @@ namespace ChromiumLauncher
 
             try
             {
+                // Force the working directory to the executable's location immediately
+                Environment.CurrentDirectory = AppDomain.CurrentDomain.BaseDirectory;
+
                 // Initialize paths and config early
                 Config = new Dictionary<string, string>();
                 IniPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "chrlauncher.ini");
@@ -59,10 +62,12 @@ namespace ChromiumLauncher
                     Log("Application Started. Debug mode enabled via INI.");
                 }
 
-                string binDir = Path.GetFullPath(Config.GetValueOrDefault("ChromiumDirectory", ".\\bin"));
+                string rawBinDir = Config.GetValueOrDefault("ChromiumDirectory", ".\\bin");
+                string binDir = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, rawBinDir));
+                
                 string exeName = Config.GetValueOrDefault("ChromiumBinary", "chrome.exe");
                 string exePath = Path.Combine(binDir, exeName);
-                
+
                 // If updateUrl is empty, it will fall back to the built-in GitHub fetcher
                 string updateUrl = Config.GetValueOrDefault("ChromiumUpdateUrl", "");
                 string cmdLine = Config.GetValueOrDefault("ChromiumCommandLine", "");
