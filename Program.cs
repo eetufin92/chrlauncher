@@ -395,7 +395,7 @@ namespace ChromiumLauncher
                 {
                     FileName = exePath,
                     Arguments = finalArguments,
-                    WorkingDirectory = Path.GetDirectoryName(exePath), 
+                    WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory, 
                     UseShellExecute = false
                 });
             }
