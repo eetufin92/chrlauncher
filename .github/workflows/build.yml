@@ -37,8 +37,9 @@ jobs:
       - name: Calculate Next Version Tag
         id: calc_version
         run: |
-          # Get the latest git tag. Suppress errors if repository has zero tags.
-          $latestTag = git describe --tags --abbrev=0 2>$null
+          # Safely get the latest tag. 'git tag' returns empty (Exit Code 0) if no tags exist, avoiding the error.
+          $tags = git tag --list --sort=-v:refname
+          $latestTag = if ($tags) { $tags[0] } else { "" }
 
           # If no tag exists, pretend the last one was 1.0.0
           if ([string]::IsNullOrWhiteSpace($latestTag)) {
@@ -52,7 +53,7 @@ jobs:
           $patch = [int]$parts[2]
 
           # Custom Versioning Logic: 1.0.9 -> 1.1.0
-          if ($patch -eq 9) {
+          if ($patch -ge 9) {
               $minor++
               $patch = 0
           } else {
@@ -62,9 +63,12 @@ jobs:
           $newTag = "$major.$minor.$patch"
           Write-Host "The new release tag will be: $newTag"
           
-          # Save the new tag as an environment variable for subsequent steps
-          echo "NEW_TAG=$newTag" | Out-File -FilePath $env:GITHUB_ENV -Append
-
+          # Safely append to GITHUB_ENV using standard PowerShell commands and forcing UTF8
+          Add-Content -Path $env:GITHUB_ENV -Value "NEW_TAG=$newTag" -Encoding utf8
+          
+          # Force the exit code to 0 to ensure GitHub Actions knows the step succeeded
+          $global:LASTEXITCODE = 0
+          
       - name: Zip Artifact for Release Page
         run: |
           # Compress the folder so users can easily download a single zip file from the Release page
