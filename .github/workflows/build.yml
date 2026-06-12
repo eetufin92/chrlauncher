@@ -2,12 +2,19 @@ name: Build and Package
 
 on: [push]
 
+# CRITICAL: We need write permissions to create tags and releases
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
+      # fetch-depth: 0 is required so Git pulls down all previous tags to calculate the next version
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -27,7 +34,50 @@ jobs:
           # Copy all files from the 'PackageExtras' folder into the build package
           copy PackageExtras\* build_package\
 
-      - name: Upload Artifact
+      - name: Calculate Next Version Tag
+        id: calc_version
+        run: |
+          # Get the latest git tag. Suppress errors if repository has zero tags.
+          $latestTag = git describe --tags --abbrev=0 2>$null
+
+          # If no tag exists, pretend the last one was 1.0.0
+          if ([string]::IsNullOrWhiteSpace($latestTag)) {
+              $latestTag = "1.0.0"
+          }
+
+          # Split the tag into Major, Minor, and Patch integers
+          $parts = $latestTag.Split('.')
+          $major = [int]$parts[0]
+          $minor = [int]$parts[1]
+          $patch = [int]$parts[2]
+
+          # Custom Versioning Logic: 1.0.9 -> 1.1.0
+          if ($patch -eq 9) {
+              $minor++
+              $patch = 0
+          } else {
+              $patch++
+          }
+
+          $newTag = "$major.$minor.$patch"
+          Write-Host "The new release tag will be: $newTag"
+          
+          # Save the new tag as an environment variable for subsequent steps
+          echo "NEW_TAG=$newTag" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Zip Artifact for Release Page
+        run: |
+          # Compress the folder so users can easily download a single zip file from the Release page
+          Compress-Archive -Path "build_package\*" -DestinationPath "ChromiumLauncher_${{ env.NEW_TAG }}.zip"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Use the built-in GitHub CLI to generate the release and upload the zip
+          gh release create ${{ env.NEW_TAG }} ChromiumLauncher_${{ env.NEW_TAG }}.zip --title "Release ${{ env.NEW_TAG }}" --generate-notes
+
+      - name: Upload Artifact (Workflow Run)
         uses: actions/upload-artifact@v4
         with:
           name: ChromiumLauncher_Release
