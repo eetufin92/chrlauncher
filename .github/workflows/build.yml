@@ -1,6 +1,10 @@
 name: Build and Package
 
-on: [push]
+on: 
+  push:
+    paths-ignore:
+      - 'README.md'
+      - '**/*.md'
 
 # CRITICAL: We need write permissions to create tags and releases
 permissions:
@@ -37,14 +41,17 @@ jobs:
       - name: Calculate Next Version Tag
         id: calc_version
         run: |
-          # Safely get the latest tag. 'git tag' returns empty (Exit Code 0) if no tags exist, avoiding the error.
-          $tags = git tag --list --sort=-v:refname
-          $latestTag = if ($tags) { $tags[0] } else { "" }
+          # Safely get the latest tag. @() forces the result into an array so [0] always gets a string, not a character.
+          $tags = @(git tag --list --sort=-v:refname)
+          $latestTag = if ($tags.Count -gt 0) { $tags[0] } else { "" }
 
           # If no tag exists, pretend the last one was 1.0.0
           if ([string]::IsNullOrWhiteSpace($latestTag)) {
               $latestTag = "1.0.0"
           }
+
+          # Strip a leading 'v' just in case (e.g., 'v1.0.0' becomes '1.0.0')
+          $latestTag = $latestTag -replace '^v', ''
 
           # Split the tag into Major, Minor, and Patch integers
           $parts = $latestTag.Split('.')
