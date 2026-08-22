@@ -1,7 +1,3 @@
-Here is the updated `README.md` reflecting the new Widevine auto-updater features, updated architecture support, and the new INI configurations.
-
----
-
 # Chromium Launcher
 
 A lightweight, configurable, and self-updating launcher for Chromium-based browsers. Built in C#, this launcher is designed to keep your browser up-to-date while providing flexible configuration for portable setups.
