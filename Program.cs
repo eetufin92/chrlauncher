@@ -456,12 +456,6 @@ namespace ChromiumLauncher
                     Log("Failed to locate Widevine download URL or version in JSON.");
                     return;
                 }
-
-                if (!platforms.TryGetProperty(platformKey, out JsonElement platformData))
-                {
-                    Log($"Error: Platform key '{platformKey}' not found in Widevine JSON tracker.");
-                    return;
-                }
                 
                 // Check local installed version
                 string widevineDir = Path.Combine(binDir, "WidevineCdm");
