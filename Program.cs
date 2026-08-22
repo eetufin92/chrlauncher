@@ -421,13 +421,14 @@ namespace ChromiumLauncher
 
                 // Map target architecture to Mozilla's platform keys
                 string platformKey = "WINNT_x86_64-msvc"; // Default x64
+                
                 if (targetArch.Equals("arm64", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("aarch64", StringComparison.OrdinalIgnoreCase))
                 {
-                    platformKey = "WINNT_aarch64-msvc";
+                    platformKey = "WINNT_aarch64-msvc-aarch64"; // arm64 architecture
                 }
                 else if (targetArch.Equals("x86", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("ia32", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("win32", StringComparison.OrdinalIgnoreCase))
                 {
-                    platformKey = "WINNT_x86-msvc";
+                    platformKey = "WINNT_x86-msvc"; // x86 architecture
                 }
 
                 string jsonUrl = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/toolkit/content/gmp-sources/widevinecdm.json";
