@@ -410,7 +410,7 @@ namespace ChromiumLauncher
 
             Directory.Delete(tempExtractDir, true);
         }
-
+        
         static async Task DownloadWidevineDirectlyAsync(string binDir, string targetArch)
         {
             try
@@ -421,42 +421,41 @@ namespace ChromiumLauncher
 
                 // Map target architecture to Mozilla's platform keys
                 string platformKey = "WINNT_x86_64-msvc"; // Default x64
-                
                 if (targetArch.Equals("arm64", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("aarch64", StringComparison.OrdinalIgnoreCase))
                 {
-                    platformKey = "WINNT_aarch64-msvc-aarch64"; // arm64 architecture
+                    platformKey = "WINNT_aarch64-msvc-aarch64";
                 }
                 else if (targetArch.Equals("x86", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("ia32", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("win32", StringComparison.OrdinalIgnoreCase))
                 {
-                    platformKey = "WINNT_x86-msvc"; // x86 architecture
+                    platformKey = "WINNT_x86-msvc";
                 }
 
                 string jsonUrl = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/toolkit/content/gmp-sources/widevinecdm.json";
                 string json = await client.GetStringAsync(jsonUrl);
                 using var doc = JsonDocument.Parse(json);
                 
-                // Get the parent widevine module object first
+                // Extract the parent module to get the version correctly
                 var widevineModule = doc.RootElement
                     .GetProperty("vendors")
                     .GetProperty("gmp-widevinecdm");
-                
+
                 var platforms = widevineModule.GetProperty("platforms");
-                
+
                 if (!platforms.TryGetProperty(platformKey, out JsonElement platformData))
                 {
                     Log($"Error: Platform key '{platformKey}' not found in Widevine JSON tracker.");
                     return;
                 }
-                
+
                 string downloadUrl = platformData.GetProperty("fileUrl").GetString();
                 string remoteVersion = widevineModule.GetProperty("version").GetString();
-                
+
                 if (string.IsNullOrEmpty(downloadUrl) || string.IsNullOrEmpty(remoteVersion))
                 {
                     Log("Failed to locate Widevine download URL or version in JSON.");
                     return;
                 }
-                
+
                 // Check local installed version
                 string widevineDir = Path.Combine(binDir, "WidevineCdm");
                 string manifestPath = Path.Combine(widevineDir, "manifest.json");
@@ -484,38 +483,128 @@ namespace ChromiumLauncher
 
                 Log($"Downloading Widevine update (Version {remoteVersion}) from: {downloadUrl}");
                 
-                byte[] crxBytes = await client.GetByteArrayAsync(downloadUrl);
-                
-                // Locate ZIP header signature (PK\x03\x04 or 50 4B 03 04)
-                int zipStart = -1;
-                for (int i = 0; i < crxBytes.Length - 3; i++)
+                // --- UI Download Logic ---
+                using var cts = new CancellationTokenSource();
+                bool skipped = false;
+
+                var form = new Form
                 {
-                    if (crxBytes[i] == 0x50 && crxBytes[i + 1] == 0x4B && crxBytes[i + 2] == 0x03 && crxBytes[i + 3] == 0x04)
+                    Text = "Widevine Updater",
+                    Size = new Size(400, 160),
+                    StartPosition = FormStartPosition.CenterScreen,
+                    FormBorderStyle = FormBorderStyle.FixedDialog,
+                    MaximizeBox = false,
+                    MinimizeBox = false
+                };
+
+                var lbl = new Label { Text = $"Downloading Widevine {remoteVersion}...", AutoSize = true, Location = new Point(20, 20) };
+                var pbar = new ProgressBar { Location = new Point(20, 50), Size = new Size(340, 25), Style = ProgressBarStyle.Continuous };
+                var btnSkip = new Button { Text = "Skip", Location = new Point(285, 85) };
+
+                btnSkip.Click += (s, e) =>
+                {
+                    Log("User clicked Skip for Widevine.");
+                    skipped = true;
+                    cts.Cancel();
+                    form.Close();
+                };
+
+                form.Controls.Add(lbl);
+                form.Controls.Add(pbar);
+                form.Controls.Add(btnSkip);
+
+                form.Shown += async (s, e) =>
+                {
+                    try
                     {
-                        zipStart = i;
-                        break;
+                        using var dlClient = new HttpClient();
+                        using var response = await dlClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+                        response.EnsureSuccessStatusCode();
+                        long? totalBytes = response.Content.Headers.ContentLength;
+
+                        using var contentStream = await response.Content.ReadAsStreamAsync(cts.Token);
+                        using var ms = new MemoryStream(); // Download into memory
+
+                        var buffer = new byte[8192];
+                        bool isMoreToRead = true;
+                        long totalRead = 0;
+
+                        while (isMoreToRead)
+                        {
+                            if (cts.Token.IsCancellationRequested) break;
+
+                            int read = await contentStream.ReadAsync(buffer, 0, buffer.Length, cts.Token);
+                            if (read == 0)
+                            {
+                                isMoreToRead = false;
+                            }
+                            else
+                            {
+                                await ms.WriteAsync(buffer, 0, read, cts.Token);
+                                totalRead += read;
+
+                                if (totalBytes.HasValue)
+                                {
+                                    int percentage = (int)((totalRead * 100) / totalBytes.Value);
+                                    pbar.Invoke((Action)(() => pbar.Value = percentage));
+                                }
+                            }
+                        }
+
+                        if (!skipped)
+                        {
+                            lbl.Invoke((Action)(() => lbl.Text = "Extracting Widevine payload..."));
+                            pbar.Invoke((Action)(() => pbar.Style = ProgressBarStyle.Marquee));
+                            
+                            await Task.Run(() => 
+                            {
+                                byte[] crxBytes = ms.ToArray();
+                                int zipStart = -1;
+
+                                // Locate ZIP header signature (PK\x03\x04 or 50 4B 03 04)
+                                for (int i = 0; i < crxBytes.Length - 3; i++)
+                                {
+                                    if (crxBytes[i] == 0x50 && crxBytes[i + 1] == 0x4B && crxBytes[i + 2] == 0x03 && crxBytes[i + 3] == 0x04)
+                                    {
+                                        zipStart = i;
+                                        break;
+                                    }
+                                }
+
+                                if (zipStart == -1)
+                                {
+                                    Log("Failed to locate ZIP signature within CRX3 payload.");
+                                    return;
+                                }
+
+                                string tempZip = Path.Combine(Path.GetTempPath(), "widevine_payload.zip");
+                                using (var fs = new FileStream(tempZip, FileMode.Create))
+                                {
+                                    fs.Write(crxBytes, zipStart, crxBytes.Length - zipStart);
+                                }
+
+                                if (Directory.Exists(widevineDir)) Directory.Delete(widevineDir, true);
+                                
+                                ZipFile.ExtractToDirectory(tempZip, widevineDir);
+                                File.Delete(tempZip);
+                                
+                                Log($"Widevine CDM ({targetArch}) updated successfully to version {remoteVersion}.");
+                            });
+                        }
                     }
-                }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        Log($"Widevine payload download/extraction failed: {ex.Message}");
+                        MessageBox.Show("Widevine Update failed: " + ex.Message, "Download Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                    finally
+                    {
+                        form.Close();
+                    }
+                };
 
-                if (zipStart == -1)
-                {
-                    Log("Failed to locate ZIP signature within CRX3 payload.");
-                    return;
-                }
-
-                string tempZip = Path.Combine(Path.GetTempPath(), "widevine_payload.zip");
-                using (var fs = new FileStream(tempZip, FileMode.Create))
-                {
-                    fs.Write(crxBytes, zipStart, crxBytes.Length - zipStart);
-                }
-
-                if (Directory.Exists(widevineDir)) Directory.Delete(widevineDir, true);
-                
-                Log("Extracting Widevine payload...");
-                ZipFile.ExtractToDirectory(tempZip, widevineDir);
-                File.Delete(tempZip);
-                
-                Log($"Widevine CDM ({targetArch}) updated successfully to version {remoteVersion}.");
+                Application.Run(form);
             }
             catch (Exception ex)
             {
