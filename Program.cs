@@ -435,26 +435,34 @@ namespace ChromiumLauncher
                 string json = await client.GetStringAsync(jsonUrl);
                 using var doc = JsonDocument.Parse(json);
                 
-                var platforms = doc.RootElement
+                // Get the parent widevine module object first
+                var widevineModule = doc.RootElement
                     .GetProperty("vendors")
-                    .GetProperty("gmp-widevinecdm")
-                    .GetProperty("platforms");
-
+                    .GetProperty("gmp-widevinecdm");
+                
+                var platforms = widevineModule.GetProperty("platforms");
+                
                 if (!platforms.TryGetProperty(platformKey, out JsonElement platformData))
                 {
                     Log($"Error: Platform key '{platformKey}' not found in Widevine JSON tracker.");
                     return;
                 }
-
+                
                 string downloadUrl = platformData.GetProperty("fileUrl").GetString();
-                string remoteVersion = platformData.GetProperty("version").GetString();
-
+                string remoteVersion = widevineModule.GetProperty("version").GetString();
+                
                 if (string.IsNullOrEmpty(downloadUrl) || string.IsNullOrEmpty(remoteVersion))
                 {
                     Log("Failed to locate Widevine download URL or version in JSON.");
                     return;
                 }
 
+                if (!platforms.TryGetProperty(platformKey, out JsonElement platformData))
+                {
+                    Log($"Error: Platform key '{platformKey}' not found in Widevine JSON tracker.");
+                    return;
+                }
+                
                 // Check local installed version
                 string widevineDir = Path.Combine(binDir, "WidevineCdm");
                 string manifestPath = Path.Combine(widevineDir, "manifest.json");
