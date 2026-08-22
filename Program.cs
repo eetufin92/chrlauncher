@@ -68,9 +68,10 @@ namespace ChromiumLauncher
                 string exeName = Config.GetValueOrDefault("ChromiumBinary", "chrome.exe");
                 string exePath = Path.Combine(binDir, exeName);
 
-                // If updateUrl is empty, it will fall back to the built-in GitHub fetcher
                 string updateUrl = Config.GetValueOrDefault("ChromiumUpdateUrl", "");
                 string cmdLine = Config.GetValueOrDefault("ChromiumCommandLine", "");
+                string targetArch = Config.GetValueOrDefault("ChromiumArchitecture", "x64");
+                bool enableWidevine = Config.GetValueOrDefault("ChromiumEnableWidevine", "false").Equals("true", StringComparison.OrdinalIgnoreCase);
                 
                 long lastCheck = long.Parse(Config.GetValueOrDefault("ChromiumLastCheck", "0"));
                 int checkPeriodDays = int.Parse(Config.GetValueOrDefault("ChromiumCheckPeriod", "2"));
@@ -78,17 +79,26 @@ namespace ChromiumLauncher
                 Log($"Resolved paths -> BinDir: '{binDir}', ExePath: '{exePath}'");
 
                 bool isExeMissing = !File.Exists(exePath);
+                string widevineDir = Path.Combine(binDir, "WidevineCdm");
+                bool isWidevineMissing = enableWidevine && !Directory.Exists(widevineDir);
+
                 bool shouldCheckUpdate = checkPeriodDays == -1 || 
                     (checkPeriodDays > 0 && DateTimeOffset.UtcNow.ToUnixTimeSeconds() - lastCheck > (checkPeriodDays * 86400));
                 bool isExeInUse = IsChromiumRunning(binDir, exeName);
 
-                Log($"Update conditions -> Missing: {isExeMissing}, ShouldCheck: {shouldCheckUpdate}, IsExeInUse: {isExeInUse}");
+                Log($"Update conditions -> Missing Exe: {isExeMissing}, Missing Widevine: {isWidevineMissing}, ShouldCheck: {shouldCheckUpdate}, IsExeInUse: {isExeInUse}");
 
-                // Trigger update check if needed (Notice we no longer check !string.IsNullOrEmpty(updateUrl) here)
-                if ((shouldCheckUpdate || isExeMissing) && !isExeInUse)
+                // Trigger update check if needed
+                if ((shouldCheckUpdate || isExeMissing || isWidevineMissing) && !isExeInUse)
                 {
                     Log($"Initiating async update check... (Force Download: {isExeMissing})");
                     CheckAndUpdateAsync(updateUrl, binDir, isExeMissing).GetAwaiter().GetResult();
+
+                    // Check and update Widevine CDM if enabled
+                    if (enableWidevine)
+                    {
+                        DownloadWidevineDirectlyAsync(binDir, targetArch).GetAwaiter().GetResult();
+                    }
                 }
 
                 // Final safety check: abort if we still don't have an executable
@@ -239,7 +249,7 @@ namespace ChromiumLauncher
                     }
                     else
                     {
-                        Log("No new update available based on timestamp.");
+                        Log("No new Chromium update available based on timestamp.");
                     }
                 }
                 else
@@ -364,6 +374,18 @@ namespace ChromiumLauncher
             var extractedDirs = Directory.GetDirectories(tempExtractDir);
             string sourceDir = extractedDirs.Length == 1 ? extractedDirs[0] : tempExtractDir;
 
+            // Preserve existing WidevineCdm folder across updates
+            string widevineDir = Path.Combine(binDir, "WidevineCdm");
+            string tempWidevineBackup = Path.Combine(Path.GetTempPath(), "WidevineCdm_Backup_" + Guid.NewGuid().ToString());
+            bool hasWidevine = Directory.Exists(widevineDir);
+
+            if (hasWidevine)
+            {
+                Log("Preserving existing WidevineCdm folder during Chromium update...");
+                if (Directory.Exists(tempWidevineBackup)) Directory.Delete(tempWidevineBackup, true);
+                Directory.Move(widevineDir, tempWidevineBackup);
+            }
+
             if (Directory.Exists(binDir)) Directory.Delete(binDir, true);
             Directory.CreateDirectory(binDir);
 
@@ -377,7 +399,125 @@ namespace ChromiumLauncher
                 File.Move(newPath, newPath.Replace(sourceDir, binDir));
             }
 
+            // Restore WidevineCdm folder to the new bin directory
+            if (hasWidevine && Directory.Exists(tempWidevineBackup))
+            {
+                Log("Restoring WidevineCdm folder to new bin directory...");
+                string restoredWidevineDir = Path.Combine(binDir, "WidevineCdm");
+                if (Directory.Exists(restoredWidevineDir)) Directory.Delete(restoredWidevineDir, true);
+                Directory.Move(tempWidevineBackup, restoredWidevineDir);
+            }
+
             Directory.Delete(tempExtractDir, true);
+        }
+
+        static async Task DownloadWidevineDirectlyAsync(string binDir, string targetArch)
+        {
+            try
+            {
+                Log($"Checking Mozilla's Widevine tracker for ({targetArch}) updates...");
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("ChromiumLauncher/1.0");
+
+                // Map target architecture to Mozilla's platform keys
+                string platformKey = "WINNT_x86_64-msvc"; // Default x64
+                if (targetArch.Equals("arm64", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("aarch64", StringComparison.OrdinalIgnoreCase))
+                {
+                    platformKey = "WINNT_aarch64-msvc";
+                }
+                else if (targetArch.Equals("x86", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("ia32", StringComparison.OrdinalIgnoreCase) || targetArch.Equals("win32", StringComparison.OrdinalIgnoreCase))
+                {
+                    platformKey = "WINNT_x86-msvc";
+                }
+
+                string jsonUrl = "https://raw.githubusercontent.com/mozilla-firefox/firefox/main/toolkit/content/gmp-sources/widevinecdm.json";
+                string json = await client.GetStringAsync(jsonUrl);
+                using var doc = JsonDocument.Parse(json);
+                
+                var platforms = doc.RootElement
+                    .GetProperty("vendors")
+                    .GetProperty("gmp-widevinecdm")
+                    .GetProperty("platforms");
+
+                if (!platforms.TryGetProperty(platformKey, out JsonElement platformData))
+                {
+                    Log($"Error: Platform key '{platformKey}' not found in Widevine JSON tracker.");
+                    return;
+                }
+
+                string downloadUrl = platformData.GetProperty("fileUrl").GetString();
+                string remoteVersion = platformData.GetProperty("version").GetString();
+
+                if (string.IsNullOrEmpty(downloadUrl) || string.IsNullOrEmpty(remoteVersion))
+                {
+                    Log("Failed to locate Widevine download URL or version in JSON.");
+                    return;
+                }
+
+                // Check local installed version
+                string widevineDir = Path.Combine(binDir, "WidevineCdm");
+                string manifestPath = Path.Combine(widevineDir, "manifest.json");
+
+                if (File.Exists(manifestPath))
+                {
+                    try
+                    {
+                        string manifestJson = File.ReadAllText(manifestPath);
+                        using var manifestDoc = JsonDocument.Parse(manifestJson);
+                        if (manifestDoc.RootElement.TryGetProperty("version", out JsonElement localVerElem))
+                        {
+                            if (localVerElem.GetString() == remoteVersion)
+                            {
+                                Log($"Widevine is already up to date (Version {remoteVersion}). Skipping download.");
+                                return;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"Failed to parse existing Widevine manifest.json: {ex.Message}. Proceeding with fresh download.");
+                    }
+                }
+
+                Log($"Downloading Widevine update (Version {remoteVersion}) from: {downloadUrl}");
+                
+                byte[] crxBytes = await client.GetByteArrayAsync(downloadUrl);
+                
+                // Locate ZIP header signature (PK\x03\x04 or 50 4B 03 04)
+                int zipStart = -1;
+                for (int i = 0; i < crxBytes.Length - 3; i++)
+                {
+                    if (crxBytes[i] == 0x50 && crxBytes[i + 1] == 0x4B && crxBytes[i + 2] == 0x03 && crxBytes[i + 3] == 0x04)
+                    {
+                        zipStart = i;
+                        break;
+                    }
+                }
+
+                if (zipStart == -1)
+                {
+                    Log("Failed to locate ZIP signature within CRX3 payload.");
+                    return;
+                }
+
+                string tempZip = Path.Combine(Path.GetTempPath(), "widevine_payload.zip");
+                using (var fs = new FileStream(tempZip, FileMode.Create))
+                {
+                    fs.Write(crxBytes, zipStart, crxBytes.Length - zipStart);
+                }
+
+                if (Directory.Exists(widevineDir)) Directory.Delete(widevineDir, true);
+                
+                Log("Extracting Widevine payload...");
+                ZipFile.ExtractToDirectory(tempZip, widevineDir);
+                File.Delete(tempZip);
+                
+                Log($"Widevine CDM ({targetArch}) updated successfully to version {remoteVersion}.");
+            }
+            catch (Exception ex)
+            {
+                Log($"Widevine download/update failed: {ex.Message}");
+            }
         }
 
         static void LaunchChromium(string exePath, string cmdLine, string[] args)
@@ -408,13 +548,8 @@ namespace ChromiumLauncher
 
         static bool IsChromiumRunning(string binDirectory, string exeName)
         {
-            // 1. Normalize the directory path
             string normalizedBinDir = Path.GetFullPath(binDirectory).TrimEnd('\\') + "\\";
-            
-            // 2. Strip the extension (e.g., "chrome.exe" becomes "chrome")
             string processName = Path.GetFileNameWithoutExtension(exeName);
-            
-            // 3. Search only for processes matching the INI configuration
             Process[] targetProcesses = Process.GetProcessesByName(processName);
 
             foreach (Process p in targetProcesses)
@@ -422,20 +557,13 @@ namespace ChromiumLauncher
                 try
                 {
                     string processPath = p.MainModule.FileName;
-                    
                     if (processPath.StartsWith(normalizedBinDir, StringComparison.OrdinalIgnoreCase))
                     {
                         return true; 
                     }
                 }
-                catch (Win32Exception)
-                {
-                    // Ignore processes we don't have permission to inspect
-                }
-                catch (InvalidOperationException)
-                {
-                    // Ignore processes that closed while we were looking at them
-                }
+                catch (Win32Exception) { }
+                catch (InvalidOperationException) { }
             }
 
             return false;
